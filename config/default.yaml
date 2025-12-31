@@ -15,7 +15,7 @@ engines:
     version: "latest"
 
   crio:
-    endpoint: "unix:///var/run/crio/crio.sock"
+    endpoint: "unix:///run/containerd/containerd.sock"
     timeout: 30
     retries: 3
     version: "latest"

@@ -621,3 +621,4 @@ class HTMLReporter(BaseReporter):
             tabs[tabIndex].classList.add('active');
         }
         """
+

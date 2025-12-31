@@ -1,0 +1,87 @@
+# iSulad Performance Testing Framework - Default Configuration
+
+# Container engine configurations
+engines:
+  isulad:
+    endpoint: "unix:///var/run/isulad.sock"
+    timeout: 30
+    retries: 3
+    version: "latest"
+
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    timeout: 30
+    retries: 3
+    version: "latest"
+
+  crio:
+    endpoint: "unix:///var/run/crio/crio.sock"
+    timeout: 30
+    retries: 3
+    version: "latest"
+
+# Test configurations
+tests:
+  default_iterations: 10
+  default_concurrency: 1
+  default_duration: 60
+  warmup_iterations: 5
+
+  # Specific test configurations
+  create_container:
+    iterations: 20
+    concurrency: 1
+
+  pull_image:
+    iterations: 5
+    concurrency: 1
+
+  concurrent_operations:
+    iterations: 50
+    concurrency: 5
+
+# Report configurations
+report:
+  output_dir: "./results"
+  formats: ["console", "json"]
+  include_charts: true
+  include_raw_data: false
+
+# Logging configuration
+logging:
+  level: "INFO"
+  file: "isulad-perf.log"
+  max_size: "10MB"
+  backup_count: 5
+
+# Performance thresholds (for anomaly detection)
+thresholds:
+  max_duration_threshold: 5.0  # seconds
+  anomaly_sigma_threshold: 3.0  # standard deviations
+  success_rate_threshold: 0.95  # 95%
+
+# Benchmark configurations
+benchmarks:
+  standard_tests:
+    - create_container
+    - pull_image
+    - start_container
+    - list_containers
+
+  extended_tests:
+    - create_container
+    - pull_image
+    - start_container
+    - stop_container
+    - remove_container
+    - list_containers
+    - list_images
+    - container_stats
+
+  client_tests:
+    - pull_image
+    - create_container
+    - start_container
+    - exec_command
+    - logs
+    - remove_container

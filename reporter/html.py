@@ -368,7 +368,11 @@ class HTMLReporter(BaseReporter):
             if isinstance(test_data, dict) and "error" not in test_data:
                 content = self._generate_test_detail_table(test_data)
             else:
-                content = f"<p>Error: {test_data.get('error', 'Unknown error')}</p>"
+                if isinstance(test_data, dict):
+                    err_msg = test_data.get("error", "Unknown error")
+                else:
+                    err_msg = str(test_data)
+                content = f"<p>Error: {err_msg}</p>"
 
             test_contents += f'<div class="tab-content {active_class}" id="tab-{i}">{content}</div>'
 
@@ -469,7 +473,11 @@ class HTMLReporter(BaseReporter):
                 content += f"<h3>{test_name}</h3>"
                 content += self._generate_comparison_table(test_comparison)
             else:
-                content += f"<h3>{test_name}</h3><p>Error: {test_comparison.get('error', 'Unknown error')}</p>"
+                if isinstance(test_comparison, dict):
+                    err_msg = test_comparison.get("error", "Unknown error")
+                else:
+                    err_msg = str(test_comparison)
+                content += f"<h3>{test_name}</h3><p>Error: {err_msg}</p>"
 
         return f"""
         <section class="section">

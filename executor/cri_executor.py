@@ -100,9 +100,21 @@ class CRIExecutor(BaseExecutor):
     async def _check_crictl_available(self):
         if shutil.which(self.crictl_bin) is None:
             raise RuntimeError(f"{self.crictl_bin} not found in PATH (set CRICTL_BIN if needed)")
-        res = await self._run([self.crictl_bin, "version"], timeout=10)
+        # IMPORTANT:
+        # Always validate against the configured endpoint. `crictl version` without endpoints will try
+        # default endpoints and may hang or succeed against a different runtime (e.g. containerd),
+        # which makes isulad tests silently fail later.
+        try:
+            res = await self._run(self._base_args() + ["version"], timeout=10)
+        except asyncio.TimeoutError as e:
+            raise RuntimeError(
+                f"{self.crictl_bin} version timed out (endpoint={self.runtime_endpoint}, timeout=10s)"
+            ) from e
         if res.returncode != 0:
-            raise RuntimeError(f"crictl not available: {res.stderr.strip()}")
+            raise RuntimeError(
+                f"{self.crictl_bin} not available for endpoint={self.runtime_endpoint}: "
+                f"{(res.stderr or res.stdout).strip()}"
+            )
 
     def _base_args(self) -> List[str]:
         args = [self.crictl_bin, "--runtime-endpoint", self.runtime_endpoint]

@@ -155,6 +155,9 @@ class BaseExecutor(abc.ABC):
         except Exception as e:
             end_time = time.time()
             await self.teardown()
+            msg = str(e).strip()
+            if not msg:
+                msg = f"{type(e).__name__}: {repr(e)}"
 
             return TestResult(
                 test_name=test_name,
@@ -165,7 +168,7 @@ class BaseExecutor(abc.ABC):
                 start_time=start_time,
                 end_time=end_time,
                 success=False,
-                error_message=str(e)
+                error_message=msg
             )
 
     def _generate_summary(self, metrics: List[PerformanceMetrics]) -> Dict[str, Any]:
@@ -262,6 +265,9 @@ class BaseExecutor(abc.ABC):
         except Exception as e:
             end_time = time.time()
             await self.teardown()
+            msg = str(e).strip()
+            if not msg:
+                msg = f"{type(e).__name__}: {repr(e)}"
 
             return TestResult(
                 test_name=f"{test_name}_concurrent_{concurrency}",
@@ -272,7 +278,7 @@ class BaseExecutor(abc.ABC):
                 start_time=start_time,
                 end_time=end_time,
                 success=False,
-                error_message=str(e)
+                error_message=msg
             )
 
     async def _run_concurrent_iteration(self, test_name: str, task_id: int) -> List[PerformanceMetrics]:

@@ -316,26 +316,43 @@ class ClientExecutor(BaseExecutor):
 
         image = getattr(self.config, "image", "busybox:latest")
         container_name = f"perf-test-{uuid.uuid4().hex[:8]}"
-        # Make sure the container keeps running and has at least one log line.
-        # NOTE:
-        # We intentionally avoid `sleep 300` because some minimal/offline busybox builds may behave unexpectedly,
-        # causing the container to exit immediately, which makes exec/logs fail with "container is not running".
-        # `tail -f /dev/null` is widely available and keeps the container alive.
-        cmd = [self.client_command, "create", "--name", container_name, image, "sh", "-c", "echo hello; tail -f /dev/null"]
-        try:
-            res = await self._run_command(cmd)
-            if res.returncode != 0:
-                return None
-            self.test_containers.append(container_name)
+
+        # Candidate keepalive commands. We verify via `exec true` after start.
+        keepalive_cmds = [
+            "echo hello; tail -f /dev/null",
+            "echo hello; sleep 9999999",
+            # Last resort: busy loop (CPU heavy), but guarantees container is Running.
+            "echo hello; while true; do :; done",
+        ]
+
+        async def _try_create_start(cmd_str: str) -> bool:
             try:
+                res = await self._run_command([
+                    self.client_command, "create", "--name", container_name, image, "sh", "-c", cmd_str
+                ])
+                if res.returncode != 0:
+                    return False
                 await self._run_command([self.client_command, "start", container_name])
-                # Give the runtime a brief moment to transition container state to Running.
                 await asyncio.sleep(0.2)
+                # Health check: exec a trivial command; if it fails, container isn't actually Running.
+                chk = await self._run_command([self.client_command, "exec", container_name, "sh", "-c", "true"], timeout=10)
+                return chk.returncode == 0
+            except Exception:
+                return False
+
+        # Try multiple strategies; cleanup between attempts.
+        for cmd_str in keepalive_cmds:
+            ok = await _try_create_start(cmd_str)
+            if ok:
+                self.test_containers.append(container_name)
+                return container_name
+            # cleanup failed attempt
+            try:
+                await self._run_command([self.client_command, "rm", "-f", container_name], timeout=10)
             except Exception:
                 pass
-            return container_name
-        except Exception:
-            return None
+
+        return None
 
     async def _test_stop_container_client(self, context: TestContext) -> List[PerformanceMetrics]:
         """测试客户端容器停止性能"""

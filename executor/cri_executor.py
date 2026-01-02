@@ -217,16 +217,33 @@ class CRIExecutor(BaseExecutor):
         image = getattr(self.config, "image", "busybox:latest")
         pod_name = f"perf-test-pod-{uuid.uuid4().hex[:8]}"
         ctr_name = f"perf-test-ctr-{uuid.uuid4().hex[:8]}"
+        pod_uid = uuid.uuid4().hex
+
+        # IMPORTANT:
+        # Some CRI runtimes (observed on iSulad) behave badly if:
+        # - PodSandbox metadata.uid is empty
+        # - log_directory is a generic system directory like "/tmp"
+        # - container log_path is empty
+        #
+        # Use a unique log_directory and a non-empty log_path to avoid symlink errors like:
+        # "failed to create symbolic link /tmp to the container log file .../console.log"
+        log_dir = f"/tmp/isulad-perf/pods/{pod_uid}"
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except Exception:
+            # best-effort; runtime may still create it
+            pass
 
         pod_cfg = {
-            "metadata": {"name": pod_name, "namespace": "default", "attempt": 1},
-            "log_directory": "/tmp",
+            "metadata": {"name": pod_name, "namespace": "default", "attempt": 1, "uid": pod_uid},
+            "log_directory": log_dir,
             "linux": {},
         }
         ctr_cfg = {
             "metadata": {"name": ctr_name},
             "image": {"image": image},
             "command": ["sh", "-c", "echo hello && sleep 1"],
+            "log_path": f"{ctr_name}.log",
             "linux": {},
         }
         pod_path = self._write_json(f"{pod_name}.pod.json", pod_cfg)

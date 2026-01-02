@@ -1,8 +1,8 @@
 """
-CRI-O engine adapter (CRI endpoint provider)
+CRI-O (CRI) engine adapter
 
 Note:
-- Our CRI performance tests are executed via `crictl` in `executor/cri_executor.py`.
+- CRI performance tests are executed via `executor/cri_executor.py` using `crictl`.
 - This engine exists mainly to provide a distinct engine name/type and endpoint in config/CLI.
 """
 
@@ -39,7 +39,7 @@ class CRIoEngine(BaseEngine):
     async def is_connected(self) -> bool:
         return self.connected
 
-    # The below operations are not used by our CRI benchmark path (we use `crictl`).
+    # The below operations are not used by our benchmark path (we use `crictl`).
     async def create_container(self, image: str, name: Optional[str] = None,
                                command: Optional[List[str]] = None,
                                ports: Optional[Dict[str, Any]] = None) -> ContainerInfo:

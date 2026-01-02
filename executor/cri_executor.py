@@ -8,6 +8,7 @@ and avoids hard dependency on protobuf stubs.
 import asyncio
 import json
 import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -34,6 +35,8 @@ class CRIExecutor(BaseExecutor):
         self.image_endpoint = getattr(engine.config, "image_endpoint", None) or self.runtime_endpoint
         self._tmpdir: Optional[str] = None
         self._created: List[str] = []  # 记录创建的sandbox/container id
+        # allow overriding crictl binary (e.g. use an older crictl for CRI v1alpha2)
+        self.crictl_bin = os.environ.get("CRICTL_BIN", "crictl")
 
     def get_executor_type(self) -> ExecutorType:
         return ExecutorType.CRI
@@ -94,12 +97,14 @@ class CRIExecutor(BaseExecutor):
         )
 
     async def _check_crictl_available(self):
-        res = await self._run(["crictl", "version"], timeout=10)
+        if shutil.which(self.crictl_bin) is None:
+            raise RuntimeError(f"{self.crictl_bin} not found in PATH (set CRICTL_BIN if needed)")
+        res = await self._run([self.crictl_bin, "version"], timeout=10)
         if res.returncode != 0:
             raise RuntimeError(f"crictl not available: {res.stderr.strip()}")
 
     def _base_args(self) -> List[str]:
-        args = ["crictl", "--runtime-endpoint", self.runtime_endpoint]
+        args = [self.crictl_bin, "--runtime-endpoint", self.runtime_endpoint]
         if self.image_endpoint:
             args += ["--image-endpoint", self.image_endpoint]
         return args

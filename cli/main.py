@@ -244,7 +244,7 @@ def compare(ctx, engines, test_name, executor_type, iterations, warmup_iteration
 @click.argument('engines', nargs=-1, required=True)
 @click.option('--executor-type', '-e', type=click.Choice(['cri', 'client']),
               default='cri', help='Executor type')
-@click.option('--suite', type=click.Choice(['standard', 'standard_offline', 'extended', 'extended_offline', 'client', 'client_offline']),
+@click.option('--suite', type=click.Choice(['standard', 'standard_offline', 'extended', 'extended_offline', 'client', 'client_offline', 'client_extended']),
               help='Benchmark suite name (defaults: cri->standard, client->client)')
 @click.option('--iterations', '-i', type=int, help='Override iterations for all tests')
 @click.option('--warmup-iterations', type=int, help='Override warmup iterations for all tests (set 0 to disable warmup)')

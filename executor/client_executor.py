@@ -587,15 +587,49 @@ class ClientExecutor(BaseExecutor):
     async def _test_logs_client(self, context: TestContext) -> List[PerformanceMetrics]:
         """测试客户端获取日志性能"""
         metrics = []
-        container_name = await self._ensure_long_running_container_started_for_op(context)
-        if not container_name:
+        # For logs, we do NOT require a long-running container.
+        # In many minimal/offline images, keeping a container alive reliably can be tricky, but
+        # fetching logs from a short-lived container is stable (logs remain after exit).
+        image = getattr(self.config, "image", "busybox:latest")
+        container_name = f"perf-test-{uuid.uuid4().hex[:8]}"
+
+        try:
+            create_res = await self._run_command([
+                self.client_command, "create", "--name", container_name, image, "sh", "-c", "echo hello"
+            ], timeout=30)
+            if create_res.returncode != 0:
+                metrics.append(PerformanceMetrics(
+                    operation="logs_client",
+                    start_time=time.time(),
+                    end_time=time.time(),
+                    duration=0,
+                    success=False,
+                    error_message=(create_res.stderr or create_res.stdout or "").strip() or "create failed",
+                    metadata={"container_name": container_name}
+                ))
+                return metrics
+
+            start_res = await self._run_command([self.client_command, "start", container_name], timeout=30)
+            if start_res.returncode != 0:
+                metrics.append(PerformanceMetrics(
+                    operation="logs_client",
+                    start_time=time.time(),
+                    end_time=time.time(),
+                    duration=0,
+                    success=False,
+                    error_message=(start_res.stderr or start_res.stdout or "").strip() or "start failed",
+                    metadata={"container_name": container_name}
+                ))
+                return metrics
+        except Exception as e:
             metrics.append(PerformanceMetrics(
                 operation="logs_client",
                 start_time=time.time(),
                 end_time=time.time(),
                 duration=0,
                 success=False,
-                error_message="No running container available for logs (create/start failed)"
+                error_message=str(e),
+                metadata={"container_name": container_name}
             ))
             return metrics
 
@@ -625,5 +659,11 @@ class ClientExecutor(BaseExecutor):
                 success=False,
                 error_message=str(e)
             ))
+        finally:
+            # best-effort cleanup of this dedicated container
+            try:
+                await self._run_command([self.client_command, "rm", "-f", container_name], timeout=10)
+            except Exception:
+                pass
 
         return metrics

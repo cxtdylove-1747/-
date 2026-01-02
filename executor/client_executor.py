@@ -317,7 +317,11 @@ class ClientExecutor(BaseExecutor):
         image = getattr(self.config, "image", "busybox:latest")
         container_name = f"perf-test-{uuid.uuid4().hex[:8]}"
         # Make sure the container keeps running and has at least one log line.
-        cmd = [self.client_command, "create", "--name", container_name, image, "sh", "-c", "echo hello && sleep 300"]
+        # NOTE:
+        # We intentionally avoid `sleep 300` because some minimal/offline busybox builds may behave unexpectedly,
+        # causing the container to exit immediately, which makes exec/logs fail with "container is not running".
+        # `tail -f /dev/null` is widely available and keeps the container alive.
+        cmd = [self.client_command, "create", "--name", container_name, image, "sh", "-c", "echo hello; tail -f /dev/null"]
         try:
             res = await self._run_command(cmd)
             if res.returncode != 0:
@@ -325,6 +329,8 @@ class ClientExecutor(BaseExecutor):
             self.test_containers.append(container_name)
             try:
                 await self._run_command([self.client_command, "start", container_name])
+                # Give the runtime a brief moment to transition container state to Running.
+                await asyncio.sleep(0.2)
             except Exception:
                 pass
             return container_name

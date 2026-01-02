@@ -5,7 +5,7 @@ Client interface performance test executor
 import time
 import asyncio
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import uuid
 
 from .base import BaseExecutor, ExecutorType, TestContext, PerformanceMetrics

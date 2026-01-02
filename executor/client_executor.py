@@ -273,14 +273,47 @@ class ClientExecutor(BaseExecutor):
 
         return metrics
 
+    async def _ensure_container_created_for_op(self, context: TestContext) -> Optional[str]:
+        """
+        为 stop/remove/exec/logs 等操作确保存在一个“已创建”的容器。
+        注意：这里不把 create 的耗时计入调用方测试指标，避免污染 stop/remove 的统计。
+        """
+        if self.test_containers:
+            return self.test_containers[-1]
+        create_metrics = await self._test_create_container_client(context)
+        if create_metrics and create_metrics[0].success and self.test_containers:
+            return self.test_containers[-1]
+        return None
+
+    async def _ensure_container_started_for_op(self, context: TestContext) -> Optional[str]:
+        """
+        为 stop/exec/logs 等操作确保存在一个“运行中”的容器。
+        注意：这里不把 start 的耗时计入调用方测试指标。
+        """
+        name = await self._ensure_container_created_for_op(context)
+        if not name:
+            return None
+        try:
+            await self._run_command([self.client_command, "start", name])
+        except Exception:
+            pass
+        return name
+
     async def _test_stop_container_client(self, context: TestContext) -> List[PerformanceMetrics]:
         """测试客户端容器停止性能"""
         metrics = []
 
-        if not self.test_containers:
+        container_name = await self._ensure_container_started_for_op(context)
+        if not container_name:
+            metrics.append(PerformanceMetrics(
+                operation="stop_container_client",
+                start_time=time.time(),
+                end_time=time.time(),
+                duration=0,
+                success=False,
+                error_message="No container available to stop (create/start failed)"
+            ))
             return metrics
-
-        container_name = self.test_containers[-1]
 
         start_time = time.time()
         try:
@@ -315,10 +348,20 @@ class ClientExecutor(BaseExecutor):
         """测试客户端容器删除性能"""
         metrics = []
 
-        if not self.test_containers:
+        container_name = await self._ensure_container_created_for_op(context)
+        if not container_name:
+            metrics.append(PerformanceMetrics(
+                operation="remove_container_client",
+                start_time=time.time(),
+                end_time=time.time(),
+                duration=0,
+                success=False,
+                error_message="No container available to remove (create failed)"
+            ))
             return metrics
-
-        container_name = self.test_containers.pop()
+        # remove will consume it from tracking list (best-effort)
+        if self.test_containers and self.test_containers[-1] == container_name:
+            self.test_containers.pop()
 
         start_time = time.time()
         try:

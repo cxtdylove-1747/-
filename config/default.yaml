@@ -114,8 +114,21 @@ benchmarks:
 
   # Client 离线/弱网环境推荐（不包含 pull_image）
   client_offline_tests:
+    # 说明：exec/logs 依赖“长期运行的容器”，在部分精简 busybox 镜像环境下可能不稳定，
+    # 因此默认离线套件先聚焦于更核心、更稳的生命周期与查询类操作。
+    - create_container
+    - start_container
+    - logs
+    - remove_container
+    - list_containers
+    - list_images
+
+  # Client 扩展套件：包含 exec/logs（可能受测试镜像能力影响）
+  client_extended_tests:
     - create_container
     - start_container
     - exec_command
     - logs
     - remove_container
+    - list_containers
+    - list_images

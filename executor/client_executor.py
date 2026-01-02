@@ -299,6 +299,38 @@ class ClientExecutor(BaseExecutor):
             pass
         return name
 
+    async def _ensure_long_running_container_started_for_op(self, context: TestContext) -> Optional[str]:
+        """
+        为 exec/logs 等需要“运行中且有输出”的操作准备一个长时间运行容器。
+        重要：不要复用 create_container_client 的 `echo hello`（启动后会立刻退出，导致 exec/logs 大量失败）。
+        注意：这里不把 create/start 的耗时计入调用方测试指标。
+        """
+        if self.test_containers:
+            # best-effort ensure it's running
+            name = self.test_containers[-1]
+            try:
+                await self._run_command([self.client_command, "start", name])
+            except Exception:
+                pass
+            return name
+
+        image = getattr(self.config, "image", "busybox:latest")
+        container_name = f"perf-test-{uuid.uuid4().hex[:8]}"
+        # Make sure the container keeps running and has at least one log line.
+        cmd = [self.client_command, "create", "--name", container_name, image, "sh", "-c", "echo hello && sleep 300"]
+        try:
+            res = await self._run_command(cmd)
+            if res.returncode != 0:
+                return None
+            self.test_containers.append(container_name)
+            try:
+                await self._run_command([self.client_command, "start", container_name])
+            except Exception:
+                pass
+            return container_name
+        except Exception:
+            return None
+
     async def _test_stop_container_client(self, context: TestContext) -> List[PerformanceMetrics]:
         """测试客户端容器停止性能"""
         metrics = []
@@ -465,18 +497,17 @@ class ClientExecutor(BaseExecutor):
     async def _test_exec_command_client(self, context: TestContext) -> List[PerformanceMetrics]:
         """测试客户端执行命令性能"""
         metrics = []
-
-        if not self.test_containers:
-            # 先创建一个运行中的容器
-            create_metrics = await self._test_create_container_client(context)
-            metrics.extend(create_metrics)
-            if create_metrics and create_metrics[0].success:
-                start_metrics = await self._test_start_container_client(context)
-                metrics.extend(start_metrics)
-                if not start_metrics or not start_metrics[0].success:
-                    return metrics
-
-        container_name = self.test_containers[-1]
+        container_name = await self._ensure_long_running_container_started_for_op(context)
+        if not container_name:
+            metrics.append(PerformanceMetrics(
+                operation="exec_command_client",
+                start_time=time.time(),
+                end_time=time.time(),
+                duration=0,
+                success=False,
+                error_message="No running container available for exec (create/start failed)"
+            ))
+            return metrics
 
         start_time = time.time()
         try:
@@ -512,11 +543,17 @@ class ClientExecutor(BaseExecutor):
     async def _test_logs_client(self, context: TestContext) -> List[PerformanceMetrics]:
         """测试客户端获取日志性能"""
         metrics = []
-
-        if not self.test_containers:
+        container_name = await self._ensure_long_running_container_started_for_op(context)
+        if not container_name:
+            metrics.append(PerformanceMetrics(
+                operation="logs_client",
+                start_time=time.time(),
+                end_time=time.time(),
+                duration=0,
+                success=False,
+                error_message="No running container available for logs (create/start failed)"
+            ))
             return metrics
-
-        container_name = self.test_containers[-1]
 
         start_time = time.time()
         try:

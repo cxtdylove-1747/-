@@ -511,9 +511,30 @@ class ClientExecutor(BaseExecutor):
 
         start_time = time.time()
         try:
+            # Prefer running through shell to avoid edge cases of binary resolution.
             result = await self._run_command([
-                self.client_command, "exec", container_name, "echo", "test"
+                self.client_command, "exec", container_name, "sh", "-c", "echo test"
             ])
+            # If exec fails, the container may not be running (or runtime is flaky). Best-effort restart and retry once.
+            if result.returncode != 0:
+                err1 = (result.stderr or result.stdout or "").strip()
+                try:
+                    await self._run_command([self.client_command, "start", container_name])
+                except Exception:
+                    pass
+                result2 = await self._run_command([
+                    self.client_command, "exec", container_name, "sh", "-c", "echo test"
+                ])
+                if result2.returncode == 0:
+                    result = result2
+                else:
+                    err2 = (result2.stderr or result2.stdout or "").strip()
+                    # preserve both attempts for debugging/reporting
+                    result = _CmdResult(
+                        returncode=result2.returncode,
+                        stdout=result2.stdout,
+                        stderr=f"first_exec_error={err1}; retry_exec_error={err2}".strip()
+                    )
             end_time = time.time()
 
             success = result.returncode == 0

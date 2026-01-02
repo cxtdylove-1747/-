@@ -1,58 +1,70 @@
-"""iSulad engine.
+"""
+iSulad engine adapter (CRI endpoint provider)
 
-This project supports running CRI benchmarks via ``executor/cri_executor.py`` using
-``crictl``. Engines therefore act as *CRI endpoint providers* rather than full
-CRI API client implementations.
-
-The engine's responsibility is to validate and return the CRI endpoint (usually
-a Unix domain socket path). Any CRI operations are executed by the CRI executor
-and are intentionally not implemented here.
+Note:
+- Our CRI performance tests are executed via `crictl` in `executor/cri_executor.py`.
+- This engine exists mainly to provide a distinct engine name/type and endpoint in config/CLI.
 """
 
-from __future__ import annotations
-
 import os
-from typing import Any
+from typing import Dict, Any, Optional, List
 
-from .base import Engine
+from .base import BaseEngine, EngineType, ContainerInfo, ImageInfo
+from core.config import EngineConfig
 
 
-class ISulad(Engine):
-    """Provide the CRI endpoint for iSulad."""
+class ISuladEngine(BaseEngine):
+    """iSulad 引擎适配器（主要用于 CRI 场景的端点配置）"""
 
-    name = "isulad"
-    # common default for iSulad
-    cri_socket = "/var/run/isulad.sock"
+    def __init__(self, config: EngineConfig):
+        super().__init__(config)
+        self.endpoint = config.endpoint
 
-    def connect(self, endpoint: str | None = None, **_: Any) -> str:
-        """Validate and return the CRI endpoint.
+    def get_engine_type(self) -> EngineType:
+        return EngineType.ISULAD
 
-        Parameters
-        ----------
-        endpoint:
-            Optional override for the CRI socket path.
-
-        Returns
-        -------
-        str
-            The validated endpoint.
-        """
-        ep = endpoint or self.cri_socket
+    async def connect(self) -> bool:
+        # Best-effort: for unix socket endpoints, just check path exists.
+        ep = self.endpoint or ""
         if ep.startswith("unix://"):
-            path = ep[len("unix://") :]
-        else:
-            path = ep
+            sock = ep.replace("unix://", "", 1)
+            self.connected = os.path.exists(sock)
+            return self.connected
+        self.connected = True
+        return True
 
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"CRI socket not found: {path}")
-        return ep
+    async def disconnect(self):
+        self.connected = False
 
-    # ---- CRI operations are executed via crictl in executor/cri_executor.py ----
-    def run(self, *args: Any, **kwargs: Any):  # type: ignore[override]
-        raise NotImplementedError("CRI operations are executed by cri_executor via crictl")
+    async def is_connected(self) -> bool:
+        return self.connected
 
-    def stop(self, *args: Any, **kwargs: Any):  # type: ignore[override]
-        raise NotImplementedError("CRI operations are executed by cri_executor via crictl")
+    # The below operations are not used by our CRI benchmark path (we use `crictl`).
+    async def create_container(self, image: str, name: Optional[str] = None,
+                               command: Optional[List[str]] = None,
+                               ports: Optional[Dict[str, Any]] = None) -> ContainerInfo:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
 
-    def status(self, *args: Any, **kwargs: Any):  # type: ignore[override]
-        raise NotImplementedError("CRI operations are executed by cri_executor via crictl")
+    async def start_container(self, container_id: str) -> bool:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
+
+    async def stop_container(self, container_id: str, timeout: int = 30) -> bool:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
+
+    async def remove_container(self, container_id: str, force: bool = False) -> bool:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
+
+    async def pull_image(self, image: str) -> ImageInfo:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
+
+    async def remove_image(self, image_id: str) -> bool:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
+
+    async def list_containers(self, all: bool = False) -> List[ContainerInfo]:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
+
+    async def list_images(self) -> List[ImageInfo]:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")
+
+    async def get_container_stats(self, container_id: str) -> Dict[str, Any]:
+        raise NotImplementedError("ISuladEngine operations are executed via CRIExecutor (crictl)")

@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .base import BaseExecutor, ExecutorType, TestContext
 from core.logger import get_logger
@@ -37,7 +37,9 @@ class CRIExecutor(BaseExecutor):
         self.runtime_endpoint = engine.config.endpoint
         self.image_endpoint = getattr(engine.config, "image_endpoint", None) or self.runtime_endpoint
         self._tmpdir: Optional[str] = None
-        self._created: List[str] = []  # 记录创建的sandbox/container id
+        # Record created resources with type so we don't call wrong CRI verbs on IDs.
+        # kind: "pod" | "container"
+        self._created: List[Tuple[str, str]] = []
         # allow overriding crictl binary (e.g. use an older crictl for CRI v1alpha2)
         self.crictl_bin = os.environ.get("CRICTL_BIN", "crictl")
 
@@ -52,6 +54,9 @@ class CRIExecutor(BaseExecutor):
         # best-effort cleanup
         try:
             await self._cleanup_created()
+        except Exception as e:
+            # Never fail a performance test because cleanup hangs/fails.
+            logger.warning(f"CRI cleanup failed (ignored): {e}")
         finally:
             if self._tmpdir and os.path.isdir(self._tmpdir):
                 try:
@@ -270,7 +275,7 @@ class CRIExecutor(BaseExecutor):
         )
         if runp.returncode != 0:
             return metrics
-        self._created.append(sandbox_id)
+        self._created.append(("pod", sandbox_id))
 
         # create
         start = time.time()
@@ -291,7 +296,7 @@ class CRIExecutor(BaseExecutor):
         )
         if create.returncode != 0:
             return metrics
-        self._created.append(ctr_id)
+        self._created.append(("container", ctr_id))
 
         if step == "create_container":
             return metrics
@@ -353,13 +358,31 @@ class CRIExecutor(BaseExecutor):
         return metrics
 
     async def _cleanup_created(self):
-        # Try to remove containers first, then pods
-        ids = list(self._created)
+        """
+        Best-effort cleanup.
+        IMPORTANT: Must never raise, otherwise the whole test is marked failed even if metrics exist.
+        """
+        items = list(self._created)
         self._created = []
-        for _id in reversed(ids):
+
+        # Use short timeouts for cleanup to avoid hanging on buggy runtime states.
+        base = self._base_args(timeout_override_seconds=5)
+
+        for kind, _id in reversed(items):
             if not _id:
                 continue
-            # try rm (container) and stopp/rmp (pod) best-effort
-            await self._run(self._base_args() + ["rm", _id], timeout=10)
-            await self._run(self._base_args() + ["stopp", _id], timeout=10)
-            await self._run(self._base_args() + ["rmp", _id], timeout=10)
+            try:
+                if kind == "container":
+                    # Container: only rm. (stop is unnecessary for CREATED containers and may hang)
+                    await self._run(base + ["rm", _id], timeout=10)
+                elif kind == "pod":
+                    # PodSandbox: stopp then rmp.
+                    await self._run(base + ["stopp", _id], timeout=10)
+                    await self._run(base + ["rmp", _id], timeout=10)
+                else:
+                    # Fallback: try common ops
+                    await self._run(base + ["rm", _id], timeout=5)
+                    await self._run(base + ["stopp", _id], timeout=5)
+                    await self._run(base + ["rmp", _id], timeout=5)
+            except Exception as e:
+                logger.debug(f"Ignore cleanup error for {kind}({_id}): {e}")

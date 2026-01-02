@@ -90,7 +90,8 @@ class CRIExecutor(BaseExecutor):
                 proc.kill()
             except Exception:
                 pass
-            raise
+            # Raise with useful context; asyncio.TimeoutError is often an "empty" exception.
+            raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(args)}")
         return _CmdResult(
             returncode=proc.returncode or 0,
             stdout=(stdout_b or b"").decode("utf-8", errors="replace"),

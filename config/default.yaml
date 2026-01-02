@@ -35,7 +35,8 @@ tests:
   default_duration: 60
   warmup_iterations: 5
   # 默认镜像：在线环境可用 busybox:latest；离线环境建议先导入后用 busybox:local
-  default_image: "busybox:local"
+  # 建议填写“完整镜像名”，避免某些 CRI 运行时对短名解析不一致（尤其离线导入/本地 tag 场景）
+  default_image: "docker.io/library/busybox:local"
 
   # Specific test configurations
   create_container:

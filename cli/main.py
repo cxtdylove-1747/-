@@ -73,14 +73,15 @@ def cli(ctx, config_file, verbose):
 @click.argument('engine_name', type=click.Choice(['isulad', 'docker', 'crio', 'containerd']))
 @click.argument('test_name')
 @click.option('--iterations', '-i', type=int, help='Number of test iterations')
+@click.option('--warmup-iterations', type=int, help='Number of warmup iterations (set 0 to disable warmup)')
 @click.option('--concurrency', type=int, help='Number of concurrent operations')
 @click.option('--duration', type=int, help='Test duration in seconds')
 @click.option('--output', '-o', type=click.Path(), help='Output file for results')
 @click.option('--format', '-f', type=click.Choice(['console', 'json', 'html']),
               default='console', help='Output format')
 @click.pass_context
-def run(ctx, executor_type, engine_name, test_name, iterations, concurrency,
-        duration, output, format):
+def run(ctx, executor_type, engine_name, test_name, iterations, warmup_iterations,
+        concurrency, duration, output, format):
     """Run performance tests"""
     config = ctx.obj['config']
 
@@ -89,6 +90,8 @@ def run(ctx, executor_type, engine_name, test_name, iterations, concurrency,
         test_config = config.get_test_config(test_name)
         if iterations:
             test_config.iterations = iterations
+        if warmup_iterations is not None:
+            test_config.warmup_iterations = warmup_iterations
         if concurrency:
             test_config.concurrency = concurrency
         if duration:
@@ -177,11 +180,12 @@ def run(ctx, executor_type, engine_name, test_name, iterations, concurrency,
 @click.option('--executor-type', '-e', type=click.Choice(['cri', 'client']),
               default='cri', help='Executor type')
 @click.option('--iterations', '-i', type=int, help='Number of test iterations per engine')
+@click.option('--warmup-iterations', type=int, help='Number of warmup iterations (set 0 to disable warmup)')
 @click.option('--output', '-o', type=click.Path(), help='Output file for comparison results')
 @click.option('--format', '-f', type=click.Choice(['console', 'html']),
               default='console', help='Output format')
 @click.pass_context
-def compare(ctx, engines, test_name, executor_type, iterations, output, format):
+def compare(ctx, engines, test_name, executor_type, iterations, warmup_iterations, output, format):
     """Compare performance across different engines"""
     config = ctx.obj['config']
 
@@ -198,6 +202,8 @@ def compare(ctx, engines, test_name, executor_type, iterations, output, format):
             test_config = config.get_test_config(f"{test_name}_{engine_name}")
             if iterations:
                 test_config.iterations = iterations
+            if warmup_iterations is not None:
+                test_config.warmup_iterations = warmup_iterations
 
             # 创建引擎和执行器
             engine = create_engine(engine_name, config)

@@ -132,6 +132,15 @@ class BaseExecutor(abc.ABC):
             # 生成摘要
             summary = self._generate_summary(metrics)
 
+            # 只要存在失败迭代，就认为 test 失败（更符合“性能测试是否通过”的直觉）
+            # 注意：此前 success=True 仅代表流程跑完，容易导致报告误判。
+            success = True
+            if not summary:
+                success = False
+            else:
+                failed = summary.get("failed_iterations", 0)
+                success = failed == 0
+
             return TestResult(
                 test_name=test_name,
                 engine_name=self.engine.config.name,
@@ -140,7 +149,7 @@ class BaseExecutor(abc.ABC):
                 summary=summary,
                 start_time=start_time,
                 end_time=end_time,
-                success=True
+                success=success
             )
 
         except Exception as e:
@@ -232,6 +241,12 @@ class BaseExecutor(abc.ABC):
 
             summary = self._generate_summary(all_metrics)
 
+            success = (len(errors) == 0)
+            if summary:
+                success = success and (summary.get("failed_iterations", 0) == 0)
+            else:
+                success = False
+
             return TestResult(
                 test_name=f"{test_name}_concurrent_{concurrency}",
                 engine_name=self.engine.config.name,
@@ -240,7 +255,7 @@ class BaseExecutor(abc.ABC):
                 summary=summary,
                 start_time=start_time,
                 end_time=end_time,
-                success=len(errors) == 0,
+                success=success,
                 error_message=f"Concurrent test errors: {errors}" if errors else None
             )
 

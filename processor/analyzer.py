@@ -126,13 +126,19 @@ class DataAnalyzer(BaseProcessor):
         analysis["engines"] = {}
         for engine_name, metrics in engines.items():
             engine_durations = [m.duration for m in metrics if m.success]
+            engine_failed = len(metrics) - len(engine_durations)
+            engine_entry = {
+                "operation_count": len(metrics),
+                "successful_count": len(engine_durations),
+                "failed_count": engine_failed,
+                "success_rate": (len(engine_durations) / len(metrics)) if metrics else 0,
+            }
             if engine_durations:
-                analysis["engines"][engine_name] = {
-                    "operation_count": len(metrics),
-                    "successful_count": len(engine_durations),
+                engine_entry.update({
                     "avg_duration": statistics.mean(engine_durations),
-                    "operations_per_second": len(engine_durations) / sum(engine_durations)
-                }
+                    "operations_per_second": len(engine_durations) / sum(engine_durations) if sum(engine_durations) > 0 else 0,
+                })
+            analysis["engines"][engine_name] = engine_entry
 
         return analysis
 

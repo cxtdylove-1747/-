@@ -244,10 +244,12 @@ class CRIExecutor(BaseExecutor):
             "log_directory": log_dir,
             "linux": {},
         }
+        # Keep the container alive once started; otherwise start/stop/remove can race with a short-lived process.
+        # This significantly improves stability and success rate in benchmarks.
         ctr_cfg = {
             "metadata": {"name": ctr_name},
             "image": {"image": image},
-            "command": ["sh", "-c", "echo hello && sleep 1"],
+            "command": ["sh", "-c", "echo hello; tail -f /dev/null"],
             "log_path": f"{ctr_name}.log",
             "linux": {},
         }
@@ -321,8 +323,14 @@ class CRIExecutor(BaseExecutor):
             return metrics
 
         # stop
+        # Give container a brief moment to enter Running state to avoid flakiness.
+        await asyncio.sleep(0.1)
         start = time.time()
         stop_res = await self._run(self._base_args() + ["stop", ctr_id], timeout=30)
+        if stop_res.returncode != 0:
+            # Best-effort retry once to handle state races.
+            await asyncio.sleep(0.2)
+            stop_res = await self._run(self._base_args() + ["stop", ctr_id], timeout=30)
         end = time.time()
         metrics.append(
             PerformanceMetrics(
@@ -342,6 +350,9 @@ class CRIExecutor(BaseExecutor):
         # rm
         start = time.time()
         rm_res = await self._run(self._base_args() + ["rm", ctr_id], timeout=30)
+        if rm_res.returncode != 0:
+            await asyncio.sleep(0.2)
+            rm_res = await self._run(self._base_args() + ["rm", ctr_id], timeout=30)
         end = time.time()
         metrics.append(
             PerformanceMetrics(
@@ -373,7 +384,8 @@ class CRIExecutor(BaseExecutor):
                 continue
             try:
                 if kind == "container":
-                    # Container: only rm. (stop is unnecessary for CREATED containers and may hang)
+                    # Container: stop (best-effort) then rm. Some runs keep the container running.
+                    await self._run(base + ["stop", _id], timeout=10)
                     await self._run(base + ["rm", _id], timeout=10)
                 elif kind == "pod":
                     # PodSandbox: stopp then rmp.

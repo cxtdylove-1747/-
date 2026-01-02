@@ -111,3 +111,11 @@ benchmarks:
     - exec_command
     - logs
     - remove_container
+
+  # Client 离线/弱网环境推荐（不包含 pull_image）
+  client_offline_tests:
+    - create_container
+    - start_container
+    - exec_command
+    - logs
+    - remove_container

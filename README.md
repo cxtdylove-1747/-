@@ -84,6 +84,9 @@ sudo -E ./.venv/bin/isulad-perf compare isulad containerd create_container -e cr
 
 # 跑一套基准（suite 由 config/default.yaml 中 benchmarks.*_tests 定义）
 sudo -E ./.venv/bin/isulad-perf bench isulad containerd -e cri --suite standard --iterations 10 --warmup-iterations 0 --format html
+
+# Client 基准（isulad vs docker，离线推荐 client_offline 套件）
+sudo -E ./.venv/bin/isulad-perf bench isulad docker -e client --suite client_offline --iterations 10 --warmup-iterations 0 --format html
 ```
 
 ### 配置

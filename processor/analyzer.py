@@ -15,6 +15,11 @@ from engines.base import PerformanceMetrics
 class DataAnalyzer(BaseProcessor):
     """性能测试数据分析器"""
 
+    def __init__(self, baseline_engine: str = ""):
+        super().__init__()
+        # If set and present in the comparison set, we always use it as baseline.
+        self.baseline_engine = (baseline_engine or "").strip()
+
     def get_processor_type(self) -> ProcessorType:
         return ProcessorType.ANALYZER
 
@@ -189,7 +194,10 @@ class DataAnalyzer(BaseProcessor):
             return {"error": "Insufficient data for comparison"}
 
         # 计算相对性能
-        baseline_engine = min(engine_metrics.keys(), key=lambda x: engine_metrics[x]["avg_duration"])
+        if self.baseline_engine and self.baseline_engine in engine_metrics:
+            baseline_engine = self.baseline_engine
+        else:
+            baseline_engine = min(engine_metrics.keys(), key=lambda x: engine_metrics[x]["avg_duration"])
         baseline_avg = engine_metrics[baseline_engine]["avg_duration"]
 
         relative_performance = {}

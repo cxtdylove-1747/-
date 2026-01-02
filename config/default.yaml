@@ -79,6 +79,12 @@ benchmarks:
     - start_container
     - list_containers
 
+  # 离线/弱网环境推荐（不包含 pull_image / container_stats）
+  standard_offline_tests:
+    - create_container
+    - start_container
+    - list_containers
+
   extended_tests:
     - create_container
     - pull_image
@@ -88,6 +94,15 @@ benchmarks:
     - list_containers
     - list_images
     - container_stats
+
+  # 离线/弱网环境推荐（不包含 pull_image / container_stats）
+  extended_offline_tests:
+    - create_container
+    - start_container
+    - stop_container
+    - remove_container
+    - list_containers
+    - list_images
 
   client_tests:
     - pull_image

@@ -123,7 +123,7 @@ def run(ctx, executor_type, engine_name, test_name, iterations, warmup_iteration
             progress.update(task, completed=True)
 
         # 处理结果
-        analyzer = DataAnalyzer()
+        analyzer = DataAnalyzer(baseline_engine="isulad")
         processed_data = analyzer.process([test_result])
 
         # 生成报告
@@ -216,7 +216,7 @@ def compare(ctx, engines, test_name, executor_type, iterations, warmup_iteration
             test_results.append(test_result)
 
         # 处理和比较结果
-        analyzer = DataAnalyzer()
+        analyzer = DataAnalyzer(baseline_engine="isulad")
         processed_data = analyzer.process(test_results)
 
         # 生成对比报告
@@ -244,7 +244,7 @@ def compare(ctx, engines, test_name, executor_type, iterations, warmup_iteration
 @click.argument('engines', nargs=-1, required=True)
 @click.option('--executor-type', '-e', type=click.Choice(['cri', 'client']),
               default='cri', help='Executor type')
-@click.option('--suite', type=click.Choice(['standard', 'extended', 'client']),
+@click.option('--suite', type=click.Choice(['standard', 'standard_offline', 'extended', 'extended_offline', 'client']),
               help='Benchmark suite name (defaults: cri->standard, client->client)')
 @click.option('--iterations', '-i', type=int, help='Override iterations for all tests')
 @click.option('--warmup-iterations', type=int, help='Override warmup iterations for all tests (set 0 to disable warmup)')
@@ -258,7 +258,7 @@ def bench(ctx, engines, executor_type, suite, iterations, warmup_iterations, out
 
     try:
         if suite is None:
-            suite = "client" if executor_type == "client" else "standard"
+            suite = "client" if executor_type == "client" else "standard_offline"
 
         tests = config.get(f"benchmarks.{suite}_tests", [])
         if not tests:
@@ -292,7 +292,7 @@ def bench(ctx, engines, executor_type, suite, iterations, warmup_iterations, out
                 test_result = loop.run_until_complete(executor.run_test(test_name))
                 test_results.append(test_result)
 
-        analyzer = DataAnalyzer()
+        analyzer = DataAnalyzer(baseline_engine="isulad")
         processed_data = analyzer.process(test_results)
 
         if format == 'console':

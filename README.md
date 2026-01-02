@@ -103,7 +103,8 @@ sudo -E ./.venv/bin/isulad-perf bench isulad containerd -e cri --suite standard 
 当 `sudo crictl -r unix:///var/run/isulad.sock version` 与 `sudo crictl -r unix:///run/containerd/containerd.sock version` 都可用时，就可以直接跑：
 
 ```bash
-sudo -E ./.venv/bin/isulad-perf bench isulad containerd -e cri --suite standard --iterations 10 --warmup-iterations 0 --format html
+# 离线/弱网环境推荐：使用 *_offline 套件（不包含 pull_image / container_stats）
+sudo -E ./.venv/bin/isulad-perf bench isulad containerd -e cri --suite extended_offline --iterations 10 --warmup-iterations 0 --format html
 ```
 
 ## 测试类型

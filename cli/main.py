@@ -14,7 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from core.config import Config
 from core.logger import setup_logging, get_logger
 from core.exceptions import PerfTestError
-from engines import BaseEngine, EngineType, ISuladEngine, DockerEngine, CRIoEngine
+from engines import BaseEngine, EngineType, ISuladEngine, DockerEngine, CRIoEngine, ContainerdEngine
 from executor import BaseExecutor, ExecutorType, CRIExecutor, ClientExecutor
 from processor import BaseProcessor, DataAnalyzer, StatisticsCalculator
 from reporter import BaseReporter, ConsoleReporter, HTMLReporter
@@ -34,6 +34,8 @@ def create_engine(engine_name: str, config: Config) -> BaseEngine:
         return DockerEngine(engine_config)
     elif engine_name.lower() == "crio":
         return CRIoEngine(engine_config)
+    elif engine_name.lower() == "containerd":
+        return ContainerdEngine(engine_config)
     else:
         raise ValueError(f"Unsupported engine: {engine_name}")
 
@@ -68,7 +70,7 @@ def cli(ctx, config_file, verbose):
 
 @cli.command()
 @click.argument('executor_type', type=click.Choice(['cri', 'client']))
-@click.argument('engine_name', type=click.Choice(['isulad', 'docker', 'crio']))
+@click.argument('engine_name', type=click.Choice(['isulad', 'docker', 'crio', 'containerd']))
 @click.argument('test_name')
 @click.option('--iterations', '-i', type=int, help='Number of test iterations')
 @click.option('--concurrency', type=int, help='Number of concurrent operations')
@@ -99,6 +101,8 @@ def run(ctx, executor_type, engine_name, test_name, iterations, concurrency,
 
         if executor_type == "cri" and engine_name == "docker":
             raise ValueError("docker不是CRI运行时，不能使用CRI模式（请用 client 模式或选择 isulad/crio）")
+        if executor_type == "client" and engine_name in ("crio", "containerd"):
+            raise ValueError("crio/containerd 不支持 client 模式（请用 cri 模式或选择 isulad/docker）")
         executor = create_executor(executor_type, engine, test_config)
 
         # 运行测试
@@ -290,7 +294,7 @@ def report(ctx, input_file, format, output):
 
 
 @cli.command()
-@click.argument('engine_name', type=click.Choice(['isulad', 'docker', 'crio']))
+@click.argument('engine_name', type=click.Choice(['isulad', 'docker', 'crio', 'containerd']))
 @click.option('--executor-type', '-e', type=click.Choice(['cri', 'client']),
               default='cri', help='Executor type')
 @click.pass_context
@@ -300,13 +304,29 @@ def health(ctx, engine_name, executor_type):
 
     try:
         console.print(f"[bold blue]Checking health of {engine_name} engine...[/bold blue]")
-
-        # 创建引擎
-        engine = create_engine(engine_name, config)
-
-        # 测试连接
+        # 使用“真实执行路径”做健康检查：
+        # - CRI：用 crictl 连接 endpoint
+        # - client：用对应客户端命令探测
+        engine_cfg = config.get_engine_config(engine_name)
         loop = asyncio.get_event_loop()
-        connected = loop.run_until_complete(engine.connect())
+        if executor_type == "cri":
+            if engine_name == "docker":
+                raise ValueError("docker不是CRI运行时，不能使用CRI模式（请用 client 模式或选择 isulad/crio/containerd）")
+            from executor.cri_executor import CRIExecutor
+            engine = create_engine(engine_name, config)
+            test_cfg = config.get_test_config("list_images")
+            ex = CRIExecutor(engine, test_cfg)
+            loop.run_until_complete(ex.setup())
+            connected = True
+        else:
+            if engine_name in ("crio", "containerd"):
+                raise ValueError("crio/containerd 不支持 client 模式（请用 cri 模式或选择 isulad/docker）")
+            from executor.client_executor import ClientExecutor
+            engine = create_engine(engine_name, config)
+            test_cfg = config.get_test_config("list_images")
+            ex = ClientExecutor(engine, test_cfg)
+            loop.run_until_complete(ex.setup())
+            connected = True
 
         if connected:
             console.print(f"[green]✓ {engine_name} engine is healthy and connected[/green]")
@@ -315,7 +335,7 @@ def health(ctx, engine_name, executor_type):
             try:
                 version_info = "CRI-based engine"  # 简化的版本信息
                 console.print(f"[dim]Engine type: {engine_name}[/dim]")
-                console.print(f"[dim]Connection endpoint: {engine.config.endpoint}[/dim]")
+                console.print(f"[dim]Connection endpoint: {engine_cfg.endpoint}[/dim]")
             except:
                 pass
         else:
@@ -333,7 +353,8 @@ def list_engines():
     console.print("[bold blue]Available Container Engines:[/bold blue]")
     console.print("• isulad - iSulad container engine")
     console.print("• docker - Docker container engine")
-    console.print("• crio   - CRI-O container engine")
+    console.print("• crio   - CRI-O container engine (CRI)")
+    console.print("• containerd - containerd engine (CRI)")
 
 
 @cli.command()

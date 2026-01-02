@@ -16,6 +16,7 @@ class EngineType(Enum):
     ISULAD = "isulad"
     DOCKER = "docker"
     CRIO = "crio"
+    CONTAINERD = "containerd"
 
 
 @dataclass

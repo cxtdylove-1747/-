@@ -98,6 +98,11 @@ class Config:
                     "endpoint": "unix:///var/run/crio/crio.sock",
                     "timeout": 30,
                     "retries": 3
+                },
+                "containerd": {
+                    "endpoint": "unix:///run/containerd/containerd.sock",
+                    "timeout": 30,
+                    "retries": 3
                 }
             },
             "tests": {

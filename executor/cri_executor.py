@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from .base import BaseExecutor, ExecutorType, TestContext
+from core.logger import get_logger
 from engines.base import BaseEngine, PerformanceMetrics
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -78,6 +81,7 @@ class CRIExecutor(BaseExecutor):
         raise ValueError(f"Unknown CRI test: {name}")
 
     async def _run(self, args: List[str], timeout: int = 60) -> _CmdResult:
+        logger.debug(f"Run command (timeout={timeout}s): {' '.join(args)}")
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
@@ -106,7 +110,8 @@ class CRIExecutor(BaseExecutor):
         # default endpoints and may hang or succeed against a different runtime (e.g. containerd),
         # which makes isulad tests silently fail later.
         try:
-            res = await self._run(self._base_args() + ["version"], timeout=10)
+            # Keep this fast; we mainly want to verify the endpoint is responsive.
+            res = await self._run(self._base_args(timeout_override_seconds=5) + ["version"], timeout=10)
         except asyncio.TimeoutError as e:
             raise RuntimeError(
                 f"{self.crictl_bin} version timed out (endpoint={self.runtime_endpoint}, timeout=10s)"
@@ -117,8 +122,11 @@ class CRIExecutor(BaseExecutor):
                 f"{(res.stderr or res.stdout).strip()}"
             )
 
-    def _base_args(self) -> List[str]:
-        args = [self.crictl_bin, "--runtime-endpoint", self.runtime_endpoint]
+    def _base_args(self, timeout_override_seconds: Optional[int] = None) -> List[str]:
+        # Always pass crictl's own timeout; relying only on subprocess timeout makes debugging harder
+        # and can leave crictl hanging.
+        timeout_s = timeout_override_seconds if timeout_override_seconds is not None else int(getattr(self.engine.config, "timeout", 30))
+        args = [self.crictl_bin, "--timeout", f"{timeout_s}s", "--runtime-endpoint", self.runtime_endpoint]
         if self.image_endpoint:
             args += ["--image-endpoint", self.image_endpoint]
         return args

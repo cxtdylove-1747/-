@@ -199,7 +199,8 @@ def compare(ctx, engines, test_name, executor_type, iterations, warmup_iteration
             console.print(f"[dim]Testing {engine_name}...[/dim]")
 
             # 更新配置
-            test_config = config.get_test_config(f"{test_name}_{engine_name}")
+            # NOTE: use the actual test_name so per-test config like `tests.create_container` works.
+            test_config = config.get_test_config(test_name)
             if iterations:
                 test_config.iterations = iterations
             if warmup_iterations is not None:
@@ -235,6 +236,81 @@ def compare(ctx, engines, test_name, executor_type, iterations, warmup_iteration
 
     except Exception as e:
         logger.error(f"Comparison failed: {e}")
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument('engines', nargs=-1, required=True)
+@click.option('--executor-type', '-e', type=click.Choice(['cri', 'client']),
+              default='cri', help='Executor type')
+@click.option('--suite', type=click.Choice(['standard', 'extended', 'client']),
+              help='Benchmark suite name (defaults: cri->standard, client->client)')
+@click.option('--iterations', '-i', type=int, help='Override iterations for all tests')
+@click.option('--warmup-iterations', type=int, help='Override warmup iterations for all tests (set 0 to disable warmup)')
+@click.option('--output', '-o', type=click.Path(), help='Output file for benchmark report')
+@click.option('--format', '-f', type=click.Choice(['console', 'html']),
+              default='html', help='Output format')
+@click.pass_context
+def bench(ctx, engines, executor_type, suite, iterations, warmup_iterations, output, format):
+    """Run a benchmark suite across engines and generate a report"""
+    config = ctx.obj['config']
+
+    try:
+        if suite is None:
+            suite = "client" if executor_type == "client" else "standard"
+
+        tests = config.get(f"benchmarks.{suite}_tests", [])
+        if not tests:
+            raise ValueError(f"No tests configured for suite '{suite}'. Check config: benchmarks.{suite}_tests")
+
+        console.print(f"[bold blue]Benchmark suite '{suite}' ({executor_type}) on engines: {', '.join(engines)}[/bold blue]")
+
+        test_results = []
+        loop = asyncio.get_event_loop()
+
+        for test_name in tests:
+            for engine_name in engines:
+                # compatibility guardrails
+                if executor_type == "cri" and engine_name == "docker":
+                    console.print(f"[yellow]Skip {test_name} on docker (docker is not a CRI runtime)[/yellow]")
+                    continue
+                if executor_type == "client" and engine_name in ("crio", "containerd"):
+                    console.print(f"[yellow]Skip {test_name} on {engine_name} (no client mode)[/yellow]")
+                    continue
+
+                console.print(f"[dim]Running {test_name} on {engine_name}...[/dim]")
+
+                test_config = config.get_test_config(test_name)
+                if iterations:
+                    test_config.iterations = iterations
+                if warmup_iterations is not None:
+                    test_config.warmup_iterations = warmup_iterations
+
+                engine = create_engine(engine_name, config)
+                executor = create_executor(executor_type, engine, test_config)
+                test_result = loop.run_until_complete(executor.run_test(test_name))
+                test_results.append(test_result)
+
+        analyzer = DataAnalyzer()
+        processed_data = analyzer.process(test_results)
+
+        if format == 'console':
+            reporter = ConsoleReporter()
+            if output:
+                reporter.report(processed_data, output)
+            else:
+                reporter.report(processed_data)
+        else:
+            reporter = HTMLReporter()
+            output_file = output or f"bench_{suite}_{executor_type}_{'_'.join(engines)}.html"
+            report_path = reporter.report(processed_data, output_file)
+            console.print(f"[green]HTML benchmark report saved to: {report_path}[/green]")
+
+        console.print(f"[green]✓ Benchmark completed: {len(test_results)} test runs[/green]")
+
+    except Exception as e:
+        logger.error(f"Benchmark failed: {e}")
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
 

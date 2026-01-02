@@ -69,17 +69,21 @@ pip install -e .
 # 查看帮助
 isulad-perf --help
 
-# 执行CRI性能测试
-isulad-perf run cri --engine isulad --test create-container
+# 查看可用引擎/测试
+isulad-perf list-engines
+isulad-perf list-tests
 
-# 执行Client性能测试
-isulad-perf run client --engine isulad --test pull-image
+# 单次运行（CRI）：isulad 的 create_container
+sudo -E ./.venv/bin/isulad-perf run cri isulad create_container --iterations 5 --warmup-iterations 0 --format console
 
-# 引擎对比测试
-isulad-perf compare --engines isulad,docker --test create-container
+# 单次运行（Client）：docker 的 list_images（示例）
+./.venv/bin/isulad-perf run client docker list_images --iterations 10 --warmup-iterations 0 --format console
 
-# 生成报告
-isulad-perf report --input results.json --output report.html
+# 多引擎对比（单个测试）
+sudo -E ./.venv/bin/isulad-perf compare isulad containerd create_container -e cri --iterations 10 --warmup-iterations 0 --format html
+
+# 跑一套基准（suite 由 config/default.yaml 中 benchmarks.*_tests 定义）
+sudo -E ./.venv/bin/isulad-perf bench isulad containerd -e cri --suite standard --iterations 10 --warmup-iterations 0 --format html
 ```
 
 ### 配置
@@ -88,6 +92,19 @@ isulad-perf report --input results.json --output report.html
 
 - 全局配置: `~/.isulad-perf/config.yaml`
 - 项目配置: `./config/default.yaml`
+
+## 赛题推荐跑法（离线/弱网环境）
+
+离线环境的核心是：**先把测试用镜像导入到运行时**，并在 `config/default.yaml` 里配置 `tests.default_image`（建议用完整名）。
+
+- **推荐默认镜像名**：`docker.io/library/busybox:local`
+- **建议同时准备 pause**（CRI PodSandbox 常用）：`docker.io/library/pause:local`
+
+当 `sudo crictl -r unix:///var/run/isulad.sock version` 与 `sudo crictl -r unix:///run/containerd/containerd.sock version` 都可用时，就可以直接跑：
+
+```bash
+sudo -E ./.venv/bin/isulad-perf bench isulad containerd -e cri --suite standard --iterations 10 --warmup-iterations 0 --format html
+```
 
 ## 测试类型
 

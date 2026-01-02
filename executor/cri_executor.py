@@ -64,8 +64,9 @@ class CRIExecutor(BaseExecutor):
 
     async def run_single_test(self, context: TestContext) -> List[PerformanceMetrics]:
         name = context.test_name
+        image = getattr(self.config, "image", "busybox:latest")
         if name == "pull_image":
-            return [await self._crictl_pull_image("busybox:latest", warmup=context.warmup)]
+            return [await self._crictl_pull_image(image, warmup=context.warmup)]
         if name == "list_containers":
             return [await self._crictl_list_containers(warmup=context.warmup)]
         if name == "list_images":
@@ -192,7 +193,7 @@ class CRIExecutor(BaseExecutor):
         - stop
         - rm
         """
-        image = "busybox:latest"
+        image = getattr(self.config, "image", "busybox:latest")
         pod_name = f"perf-test-pod-{uuid.uuid4().hex[:8]}"
         ctr_name = f"perf-test-ctr-{uuid.uuid4().hex[:8]}"
 

@@ -153,7 +153,7 @@ class ClientExecutor(BaseExecutor):
         """测试客户端镜像拉取性能"""
         metrics = []
 
-        image = "busybox:latest"
+        image = getattr(self.config, "image", "busybox:latest")
 
         start_time = time.time()
         try:
@@ -188,7 +188,7 @@ class ClientExecutor(BaseExecutor):
         """测试客户端容器创建性能"""
         metrics = []
 
-        image = "busybox:latest"
+        image = getattr(self.config, "image", "busybox:latest")
         container_name = f"perf-test-{uuid.uuid4().hex[:8]}"
 
         start_time = time.time()

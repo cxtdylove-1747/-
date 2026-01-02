@@ -26,6 +26,8 @@ tests:
   default_concurrency: 1
   default_duration: 60
   warmup_iterations: 5
+  # 默认镜像：在线环境可用 busybox:latest；离线环境建议先导入后用 busybox:local
+  default_image: "busybox:local"
 
   # Specific test configurations
   create_container:

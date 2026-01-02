@@ -27,6 +27,8 @@ class TestConfig:
     concurrency: int = 1
     duration: int = 60
     warmup_iterations: int = 5
+    # 默认使用的镜像名（离线环境可改为 busybox:local 等）
+    image: str = "busybox:latest"
 
 
 @dataclass
@@ -138,6 +140,7 @@ class Config:
             "concurrency": tests_cfg.get("default_concurrency", 1),
             "duration": tests_cfg.get("default_duration", 60),
             "warmup_iterations": tests_cfg.get("warmup_iterations", 5),
+            "image": tests_cfg.get("default_image", "busybox:latest"),
         }
         # 按测试名覆盖（支持 tests: { create_container: {iterations: 20, ...} }）
         per_test = tests_cfg.get(test_name, {}) if isinstance(tests_cfg.get(test_name, {}), dict) else {}
@@ -149,6 +152,7 @@ class Config:
             concurrency=int(base["concurrency"]),
             duration=int(base["duration"]),
             warmup_iterations=int(base["warmup_iterations"]),
+            image=str(base.get("image") or "busybox:latest"),
         )
 
     def get_report_config(self) -> ReportConfig:

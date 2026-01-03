@@ -18,6 +18,7 @@ from engines import BaseEngine, EngineType, ISuladEngine, DockerEngine, CRIoEngi
 from executor import BaseExecutor, ExecutorType, CRIExecutor, ClientExecutor
 from processor import BaseProcessor, DataAnalyzer, StatisticsCalculator
 from reporter import BaseReporter, ConsoleReporter, HTMLReporter
+from core.envinfo import collect_env_info
 
 
 console = Console()
@@ -124,6 +125,23 @@ def run(ctx, executor_type, engine_name, test_name, iterations, warmup_iteration
 
         # 处理结果
         analyzer = DataAnalyzer(baseline_engine="isulad")
+        analyzer.set_metadata("run_config", {
+            "mode": "run",
+            "executor_type": executor_type,
+            "engines": [engine_name],
+            "test_name": test_name,
+            "iterations": test_config.iterations,
+            "warmup_iterations": test_config.warmup_iterations,
+            "concurrency": test_config.concurrency,
+            "duration": test_config.duration,
+            "default_image": getattr(test_config, "image", ""),
+            "cri_lifecycle_image": getattr(test_config, "cri_lifecycle_image", ""),
+            "cri_host_network": getattr(test_config, "cri_host_network", None),
+        })
+        analyzer.set_metadata("env", collect_env_info(
+            engines=[engine_name],
+            cri_endpoints={engine_name: engine.config.endpoint} if executor_type == "cri" else {},
+        ))
         processed_data = analyzer.process([test_result])
 
         # 生成报告
@@ -217,6 +235,19 @@ def compare(ctx, engines, test_name, executor_type, iterations, warmup_iteration
 
         # 处理和比较结果
         analyzer = DataAnalyzer(baseline_engine="isulad")
+        analyzer.set_metadata("run_config", {
+            "mode": "compare",
+            "executor_type": executor_type,
+            "engines": list(engines),
+            "test_name": test_name,
+            "iterations": iterations,
+            "warmup_iterations": warmup_iterations,
+        })
+        cri_eps = {}
+        if executor_type == "cri":
+            for r in test_results:
+                cri_eps[r.engine_name] = config.get_engine_config(r.engine_name).endpoint
+        analyzer.set_metadata("env", collect_env_info(engines=list(engines), cri_endpoints=cri_eps))
         processed_data = analyzer.process(test_results)
 
         # 生成对比报告
@@ -248,11 +279,12 @@ def compare(ctx, engines, test_name, executor_type, iterations, warmup_iteration
               help='Benchmark suite name (defaults: cri->standard, client->client)')
 @click.option('--iterations', '-i', type=int, help='Override iterations for all tests')
 @click.option('--warmup-iterations', type=int, help='Override warmup iterations for all tests (set 0 to disable warmup)')
+@click.option('--concurrency-levels', type=str, help='Comma-separated concurrency levels for a sweep (e.g. "1,2,4,8")')
 @click.option('--output', '-o', type=click.Path(), help='Output file for benchmark report')
 @click.option('--format', '-f', type=click.Choice(['console', 'html']),
               default='html', help='Output format')
 @click.pass_context
-def bench(ctx, engines, executor_type, suite, iterations, warmup_iterations, output, format):
+def bench(ctx, engines, executor_type, suite, iterations, warmup_iterations, concurrency_levels, output, format):
     """Run a benchmark suite across engines and generate a report"""
     config = ctx.obj['config']
 
@@ -281,18 +313,60 @@ def bench(ctx, engines, executor_type, suite, iterations, warmup_iterations, out
 
                 console.print(f"[dim]Running {test_name} on {engine_name}...[/dim]")
 
-                test_config = config.get_test_config(test_name)
+                base_test_config = config.get_test_config(test_name)
                 if iterations:
-                    test_config.iterations = iterations
+                    base_test_config.iterations = iterations
                 if warmup_iterations is not None:
-                    test_config.warmup_iterations = warmup_iterations
+                    base_test_config.warmup_iterations = warmup_iterations
 
-                engine = create_engine(engine_name, config)
-                executor = create_executor(executor_type, engine, test_config)
-                test_result = loop.run_until_complete(executor.run_test(test_name))
-                test_results.append(test_result)
+                # Optional concurrency sweep (scalability curve)
+                levels = []
+                if concurrency_levels:
+                    for part in concurrency_levels.split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        try:
+                            v = int(part)
+                            if v > 0:
+                                levels.append(v)
+                        except Exception:
+                            continue
+                    if not levels:
+                        raise ValueError("Invalid --concurrency-levels. Example: --concurrency-levels 1,2,4,8")
+                else:
+                    # default: single run with configured concurrency
+                    levels = [int(getattr(base_test_config, "concurrency", 1) or 1)]
+
+                for c in levels:
+                    test_config = config.get_test_config(test_name)
+                    # apply overrides again (fresh object)
+                    if iterations:
+                        test_config.iterations = iterations
+                    if warmup_iterations is not None:
+                        test_config.warmup_iterations = warmup_iterations
+                    test_config.concurrency = c
+
+                    engine = create_engine(engine_name, config)
+                    executor = create_executor(executor_type, engine, test_config)
+                    test_result = loop.run_until_complete(executor.run_test(test_name))
+                    test_results.append(test_result)
 
         analyzer = DataAnalyzer(baseline_engine="isulad")
+        analyzer.set_metadata("run_config", {
+            "mode": "bench",
+            "executor_type": executor_type,
+            "suite": suite,
+            "engines": list(engines),
+            "iterations": iterations,
+            "warmup_iterations": warmup_iterations,
+            "concurrency_levels": concurrency_levels,
+        })
+        cri_eps = {}
+        if executor_type == "cri":
+            for e in engines:
+                cri_eps[str(e)] = config.get_engine_config(str(e)).endpoint
+        analyzer.set_metadata("env", collect_env_info(engines=list(engines), cri_endpoints=cri_eps))
         processed_data = analyzer.process(test_results)
 
         if format == 'console':

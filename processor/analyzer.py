@@ -4,6 +4,7 @@ Data analyzer for performance test results
 
 import time
 import statistics
+import re
 from typing import Dict, Any, List
 from collections import defaultdict
 
@@ -33,8 +34,12 @@ class DataAnalyzer(BaseProcessor):
             "test_analysis": self._analyze_individual_tests(test_results),
             "engine_comparison": self._compare_engines(test_results),
             "performance_insights": self._generate_performance_insights(test_results),
-            "anomalies": self._detect_anomalies(test_results)
+            "anomalies": self._detect_anomalies(test_results),
+            # Optional: concurrency sweep (scalability) analysis derived from *_concurrent_N results.
+            "scalability": self._analyze_scalability(test_results),
         }
+        # High-level findings derived from comparisons (best-effort)
+        processed_data["top_findings"] = self._generate_top_findings(processed_data)
 
         return ProcessedData(
             processor_type=self.get_processor_type(),
@@ -43,6 +48,70 @@ class DataAnalyzer(BaseProcessor):
             metadata=self.metadata,
             timestamp=time.time()
         )
+
+    def _analyze_scalability(self, test_results: List[TestResult]) -> Dict[str, Any]:
+        """
+        Detect concurrency sweep runs and summarize scaling curves.
+
+        We use the naming convention produced by BaseExecutor.run_concurrent_test:
+          {test_name}_concurrent_{N}
+
+        For c=1 baseline runs (non-concurrent), we also include them if there exists any c>1 for the same base test.
+        """
+        if not test_results:
+            return {}
+
+        # base_test -> engine -> c -> {ops, p95, success_rate}
+        curves: Dict[str, Dict[str, Dict[int, Dict[str, Any]]]] = defaultdict(lambda: defaultdict(dict))
+        has_sweep: Dict[str, bool] = defaultdict(bool)
+
+        for r in test_results:
+            tn = str(r.test_name or "")
+            m = re.match(r"^(?P<base>.+)_concurrent_(?P<c>\d+)$", tn)
+            if m:
+                base = m.group("base")
+                c = int(m.group("c"))
+                has_sweep[base] = True
+            else:
+                base = tn
+                c = 1
+
+            s = r.summary or {}
+            try:
+                ops = float(s.get("operations_per_second", 0.0))
+            except Exception:
+                ops = 0.0
+            try:
+                p95 = float(s.get("p95_duration", 0.0))
+            except Exception:
+                p95 = 0.0
+            try:
+                sr = float(s.get("success_rate", 0.0))
+            except Exception:
+                sr = 0.0
+
+            curves[base][r.engine_name][c] = {
+                "operations_per_second": ops,
+                "p95_duration": p95,
+                "success_rate": sr,
+            }
+
+        # Keep only tests that truly have a sweep (any concurrent_N)
+        out: Dict[str, Any] = {}
+        for base, engines_map in curves.items():
+            if not has_sweep.get(base, False):
+                continue
+            out[base] = {"engines": {}}
+            for eng, pts in engines_map.items():
+                xs = sorted(pts.keys())
+                out[base]["engines"][eng] = {
+                    "concurrency": xs,
+                    "ops_per_sec": [pts[x]["operations_per_second"] for x in xs],
+                    "p95_duration": [pts[x]["p95_duration"] for x in xs],
+                    "success_rate": [pts[x]["success_rate"] for x in xs],
+                }
+
+        return out
 
     def _generate_overall_summary(self, test_results: List[TestResult]) -> Dict[str, Any]:
         """生成总体摘要"""
@@ -112,15 +181,23 @@ class DataAnalyzer(BaseProcessor):
         }
 
         if durations:
+            p25 = self._percentile(durations, 25)
+            p75 = self._percentile(durations, 75)
+            mean_v = statistics.mean(durations)
+            std_v = statistics.stdev(durations) if len(durations) > 1 else 0
             analysis.update({
-                "avg_duration": statistics.mean(durations),
+                "avg_duration": mean_v,
                 "min_duration": min(durations),
                 "max_duration": max(durations),
-                "std_duration": statistics.stdev(durations) if len(durations) > 1 else 0,
+                "std_duration": std_v,
                 "median_duration": statistics.median(durations),
+                "p25_duration": p25,
+                "p75_duration": p75,
+                "iqr_duration": max(0.0, p75 - p25),
                 "p95_duration": self._percentile(durations, 95),
                 "p99_duration": self._percentile(durations, 99),
-                "operations_per_second": len(durations) / sum(durations) if sum(durations) > 0 else 0
+                "operations_per_second": len(durations) / sum(durations) if sum(durations) > 0 else 0,
+                "cv_duration": (std_v / mean_v) if mean_v > 0 else 0.0,
             })
 
         # 按引擎分组分析
@@ -129,6 +206,7 @@ class DataAnalyzer(BaseProcessor):
             engines[result.engine_name].extend(result.metrics)
 
         analysis["engines"] = {}
+        max_samples = 200  # keep HTML report size reasonable
         for engine_name, metrics in engines.items():
             engine_durations = [m.duration for m in metrics if m.success]
             engine_failed = len(metrics) - len(engine_durations)
@@ -138,9 +216,38 @@ class DataAnalyzer(BaseProcessor):
                 "failed_count": engine_failed,
                 "success_rate": (len(engine_durations) / len(metrics)) if metrics else 0,
             }
+            # Keep a small sample of durations for plotting (seconds)
             if engine_durations:
+                engine_entry["duration_samples"] = engine_durations[:max_samples]
+            if engine_failed:
+                # Collect a few representative error messages for debugging/reporting.
+                samples = []
+                for m in metrics:
+                    if m.success:
+                        continue
+                    msg = (m.error_message or "").strip()
+                    if not msg:
+                        continue
+                    if msg not in samples:
+                        samples.append(msg)
+                    if len(samples) >= 3:
+                        break
+                if samples:
+                    engine_entry["error_samples"] = samples
+            if engine_durations:
+                p25 = self._percentile(engine_durations, 25)
+                p75 = self._percentile(engine_durations, 75)
+                mean_v = statistics.mean(engine_durations)
+                std_v = statistics.stdev(engine_durations) if len(engine_durations) > 1 else 0
                 engine_entry.update({
-                    "avg_duration": statistics.mean(engine_durations),
+                    "avg_duration": mean_v,
+                    "median_duration": statistics.median(engine_durations),
+                    "p95_duration": self._percentile(engine_durations, 95),
+                    "p99_duration": self._percentile(engine_durations, 99),
+                    "p25_duration": p25,
+                    "p75_duration": p75,
+                    "iqr_duration": max(0.0, p75 - p25),
+                    "cv_duration": (std_v / mean_v) if mean_v > 0 else 0.0,
                     "operations_per_second": len(engine_durations) / sum(engine_durations) if sum(engine_durations) > 0 else 0,
                 })
             analysis["engines"][engine_name] = engine_entry
@@ -184,10 +291,21 @@ class DataAnalyzer(BaseProcessor):
             if test_result and test_result.metrics:
                 durations = [m.duration for m in test_result.metrics if m.success]
                 if durations:
+                    p25 = self._percentile(durations, 25)
+                    p75 = self._percentile(durations, 75)
+                    mean_v = statistics.mean(durations)
+                    std_v = statistics.stdev(durations) if len(durations) > 1 else 0
                     engine_metrics[engine_name] = {
-                        "avg_duration": statistics.mean(durations),
+                        "avg_duration": mean_v,
                         "operations_per_second": len(durations) / sum(durations),
-                        "success_rate": len(durations) / len(test_result.metrics)
+                        "success_rate": len(durations) / len(test_result.metrics),
+                        "median_duration": statistics.median(durations),
+                        "p95_duration": self._percentile(durations, 95),
+                        "p99_duration": self._percentile(durations, 99),
+                        "p25_duration": p25,
+                        "p75_duration": p75,
+                        "iqr_duration": max(0.0, p75 - p25),
+                        "cv_duration": (std_v / mean_v) if mean_v > 0 else 0.0,
                     }
 
         if len(engine_metrics) < 2:
@@ -213,6 +331,40 @@ class DataAnalyzer(BaseProcessor):
             "baseline_engine": baseline_engine,
             "relative_performance": relative_performance
         }
+
+    def _generate_top_findings(self, processed_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Produce a few high-signal findings for the report header.
+        Best-effort: only based on engine_comparison relative_performance (baseline typically isulad).
+        """
+        findings: List[Dict[str, Any]] = []
+        comparison = processed_data.get("engine_comparison") or {}
+        if not isinstance(comparison, dict):
+            return findings
+
+        for test_name, comp in comparison.items():
+            if not isinstance(comp, dict) or "error" in comp:
+                continue
+            baseline = comp.get("baseline_engine")
+            rel = comp.get("relative_performance") or {}
+            for eng, relm in rel.items():
+                if eng == baseline:
+                    continue
+                ratio = relm.get("performance_ratio")
+                if not isinstance(ratio, (int, float)) or ratio <= 0:
+                    continue
+                # ratio > 1 means baseline faster; < 1 means slower.
+                findings.append({
+                    "test": test_name,
+                    "baseline": baseline,
+                    "other": eng,
+                    "performance_ratio": float(ratio),
+                    "relative_duration": float(relm.get("relative_duration", 0.0)),
+                })
+
+        # Sort by strongest effect away from 1.0
+        findings.sort(key=lambda x: abs(x.get("performance_ratio", 1.0) - 1.0), reverse=True)
+        return findings[:8]
 
     def _generate_performance_insights(self, test_results: List[TestResult]) -> Dict[str, Any]:
         """生成性能洞察"""
@@ -241,6 +393,27 @@ class DataAnalyzer(BaseProcessor):
             insights["recommendations"].append(
                 "Consider optimizing slow operations identified in bottlenecks"
             )
+
+        # Add comparison-driven recommendations (baseline-focused if configured)
+        try:
+            comp = self._compare_engines(test_results) if len(test_results) >= 2 else {}
+            if isinstance(comp, dict):
+                slow_notes = []
+                for test_name, data in comp.items():
+                    if not isinstance(data, dict) or "error" in data:
+                        continue
+                    baseline = data.get("baseline_engine")
+                    rel = data.get("relative_performance") or {}
+                    for eng, relm in rel.items():
+                        if eng == baseline:
+                            continue
+                        rd = relm.get("relative_duration")
+                        if isinstance(rd, (int, float)) and rd >= 1.25:
+                            slow_notes.append(f"{test_name}: {eng} is slower than {baseline} by {(rd-1)*100:.0f}%")
+                if slow_notes:
+                    insights["recommendations"].append("Key slow paths: " + "; ".join(slow_notes[:5]))
+        except Exception:
+            pass
 
         # 分析趋势
         if len(test_results) > 1:

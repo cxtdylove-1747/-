@@ -220,6 +220,9 @@ class CRIExecutor(BaseExecutor):
         - rm
         """
         image = getattr(self.config, "image", "busybox:latest")
+        lifecycle_image = (getattr(self.config, "cri_lifecycle_image", "") or "").strip()
+        # Use a stable image for lifecycle tests if provided (recommended: pause:local).
+        image_for_lifecycle = lifecycle_image or image
         pod_name = f"perf-test-pod-{uuid.uuid4().hex[:8]}"
         ctr_name = f"perf-test-ctr-{uuid.uuid4().hex[:8]}"
         pod_uid = uuid.uuid4().hex
@@ -239,17 +242,23 @@ class CRIExecutor(BaseExecutor):
             # best-effort; runtime may still create it
             pass
 
+        # Optional: use host network to avoid CNI flakiness in some environments.
+        pod_linux = {}
+        if getattr(self.config, "cri_host_network", True):
+            # NamespaceMode: POD=0, NODE=2 (use host namespaces)
+            pod_linux = {"security_context": {"namespace_options": {"network": 2}}}
+
         pod_cfg = {
             "metadata": {"name": pod_name, "namespace": "default", "attempt": 1, "uid": pod_uid},
             "log_directory": log_dir,
-            "linux": {},
+            "linux": pod_linux,
         }
-        # Keep the container alive once started; otherwise start/stop/remove can race with a short-lived process.
-        # This significantly improves stability and success rate in benchmarks.
         ctr_cfg = {
             "metadata": {"name": ctr_name},
-            "image": {"image": image},
-            "command": ["sh", "-c", "echo hello; tail -f /dev/null"],
+            "image": {"image": image_for_lifecycle},
+            # For pause-like images, leave command empty so the image entrypoint runs (usually long-running).
+            # For other images, a short-lived command can cause start/stop/remove flakiness; prefer long-running.
+            "command": [] if lifecycle_image else ["sh", "-c", "echo hello; while true; do sleep 3600; done"],
             "log_path": f"{ctr_name}.log",
             "linux": {},
         }
@@ -263,6 +272,18 @@ class CRIExecutor(BaseExecutor):
         runp = await self._run(self._base_args() + ["runp", pod_path], timeout=30)
         end = time.time()
         sandbox_id = runp.stdout.strip().splitlines()[-1].strip() if runp.returncode == 0 else ""
+        err_msg = None if runp.returncode == 0 else (runp.stderr.strip() or runp.stdout.strip())
+        # Common CRI-O offline pitfall: runtime tries to pull default pause image (registry.k8s.io/pause:3.9).
+        # Provide an actionable hint directly in the report.
+        if runp.returncode != 0 and self.engine.config.name == "crio" and err_msg:
+            if "registry.k8s.io/pause" in err_msg and ("connect: connection refused" in err_msg or "dial tcp" in err_msg):
+                err_msg = (
+                    err_msg
+                    + "\nHint: CRI-O uses a default sandbox (pause) image. In offline env, ensure it exists locally.\n"
+                    + "Example fix:\n"
+                    + "  sudo podman tag docker.io/library/pause:local registry.k8s.io/pause:3.9\n"
+                    + "  sudo systemctl restart crio\n"
+                )
         metrics.append(
             PerformanceMetrics(
                 operation="run_pod_sandbox",
@@ -270,7 +291,7 @@ class CRIExecutor(BaseExecutor):
                 end_time=end,
                 duration=end - start,
                 success=runp.returncode == 0,
-                error_message=None if runp.returncode == 0 else runp.stderr.strip() or runp.stdout.strip(),
+                error_message=err_msg,
                 metadata={"pod_name": pod_name, "sandbox_id": sandbox_id},
                 warmup=warmup,
             )
@@ -306,6 +327,10 @@ class CRIExecutor(BaseExecutor):
         # start
         start = time.time()
         start_res = await self._run(self._base_args() + ["start", ctr_id], timeout=30)
+        if start_res.returncode != 0:
+            # Best-effort retry once (state race / transient runtime issue)
+            await asyncio.sleep(0.2)
+            start_res = await self._run(self._base_args() + ["start", ctr_id], timeout=30)
         end = time.time()
         metrics.append(
             PerformanceMetrics(

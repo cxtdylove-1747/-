@@ -29,6 +29,10 @@ class TestConfig:
     warmup_iterations: int = 5
     # 默认使用的镜像名（离线环境可改为 busybox:local 等）
     image: str = "busybox:latest"
+    # CRI 生命周期类测试建议使用更稳定的镜像（例如 pause），避免短命进程导致 start/stop/remove 竞态失败
+    cri_lifecycle_image: str = ""
+    # CRI PodSandbox 是否使用 hostNetwork（NamespaceMode=NODE=2），可跳过 CNI，提升离线/虚拟机环境稳定性
+    cri_host_network: bool = True
 
 
 @dataclass
@@ -146,6 +150,8 @@ class Config:
             "duration": tests_cfg.get("default_duration", 60),
             "warmup_iterations": tests_cfg.get("warmup_iterations", 5),
             "image": tests_cfg.get("default_image", "busybox:latest"),
+            "cri_lifecycle_image": tests_cfg.get("cri_lifecycle_image", ""),
+            "cri_host_network": bool(tests_cfg.get("cri_host_network", True)),
         }
         # 按测试名覆盖（支持 tests: { create_container: {iterations: 20, ...} }）
         per_test = tests_cfg.get(test_name, {}) if isinstance(tests_cfg.get(test_name, {}), dict) else {}
@@ -158,6 +164,8 @@ class Config:
             duration=int(base["duration"]),
             warmup_iterations=int(base["warmup_iterations"]),
             image=str(base.get("image") or "busybox:latest"),
+            cri_lifecycle_image=str(base.get("cri_lifecycle_image") or ""),
+            cri_host_network=bool(base.get("cri_host_network", True)),
         )
 
     def get_report_config(self) -> ReportConfig:

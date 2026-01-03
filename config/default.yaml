@@ -37,6 +37,11 @@ tests:
   # 默认镜像：在线环境可用 busybox:latest；离线环境建议先导入后用 busybox:local
   # 建议填写“完整镜像名”，避免某些 CRI 运行时对短名解析不一致（尤其离线导入/本地 tag 场景）
   default_image: "docker.io/library/busybox:local"
+  # CRI 生命周期类测试建议使用 pause 镜像（更稳定：启动后不会秒退，也不依赖 sh/tail/sleep）
+  # 你之前已导入 pause:local 的话，默认用它即可。
+  cri_lifecycle_image: "docker.io/library/pause:local"
+  # CRI PodSandbox 使用 hostNetwork（跳过 CNI），在虚拟机/离线环境下更稳；如需测试 CNI 相关开销可改为 false
+  cri_host_network: true
 
   # Specific test configurations
   create_container:

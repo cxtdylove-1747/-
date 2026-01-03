@@ -3,6 +3,8 @@ HTML result reporter
 """
 
 import json
+import base64
+import io
 from typing import Dict, Any, Optional
 from pathlib import Path
 
@@ -37,6 +39,7 @@ class HTMLReporter(BaseReporter):
     def _generate_html(self, processed_data: ProcessedData) -> str:
         """生成HTML内容"""
         data = processed_data.processed_data
+        meta = processed_data.metadata or {}
 
         html_template = f"""
 <!DOCTYPE html>
@@ -57,7 +60,11 @@ class HTMLReporter(BaseReporter):
         </header>
 
         <main>
+            {self._generate_run_config_section(meta)}
+            {self._generate_environment_section(meta)}
+            {self._generate_top_findings_section(data)}
             {self._generate_summary_section(data)}
+            {self._generate_scalability_section(data)}
             {self._generate_test_analysis_section(data)}
             {self._generate_engine_comparison_section(data)}
             {self._generate_insights_section(data)}
@@ -76,6 +83,173 @@ class HTMLReporter(BaseReporter):
         """
 
         return html_template
+
+    def _generate_environment_section(self, meta: Dict[str, Any]) -> str:
+        env = meta.get("env") if isinstance(meta, dict) else None
+        if not isinstance(env, dict) or not env:
+            return ""
+
+        # Keep it short + high-signal; full raw env is still included as JSON in the page source.
+        osr = env.get("os_release") or {}
+        plat = env.get("platform") or {}
+        py = env.get("python") or {}
+        bins = env.get("binaries") or {}
+        engines = env.get("engines") or {}
+
+        def _v(d: Dict[str, Any], k: str) -> str:
+            try:
+                return str(d.get(k, "")).strip()
+            except Exception:
+                return ""
+
+        rows = ""
+        rows += f"<tr><td>OS</td><td><code>{self._escape_html(_v(osr, 'PRETTY_NAME') or (_v(plat,'system')+' '+_v(plat,'release')))}</code></td></tr>"
+        rows += f"<tr><td>Kernel</td><td><code>{self._escape_html(_v(plat,'release'))}</code></td></tr>"
+        rows += f"<tr><td>Python</td><td><code>{self._escape_html((_v(py,'implementation')+' '+_v(py,'version')).strip())}</code></td></tr>"
+
+        for b in ["crictl", "podman", "docker", "isula", "isulad", "runc"]:
+            if b not in bins:
+                continue
+            vv = bins[b].get("version") or bins[b].get("path") or ""
+            rows += f"<tr><td>{self._escape_html(b)}</td><td><code>{self._escape_html(str(vv)[:300])}</code></td></tr>"
+
+        # CRI endpoints per engine (if any)
+        for eng, ed in engines.items():
+            if not isinstance(ed, dict):
+                continue
+            ep = ed.get("cri_endpoint")
+            if ep:
+                rows += f"<tr><td>CRI endpoint ({self._escape_html(str(eng))})</td><td><code>{self._escape_html(str(ep))}</code></td></tr>"
+
+        raw = self._escape_html(json.dumps(env, ensure_ascii=False, indent=2)[:8000])
+        return f"""
+        <section class="section">
+          <h2>Environment Fingerprint</h2>
+          <table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>{rows}</tbody></table>
+          <details style="margin-top: 0.5rem;">
+            <summary><strong>Raw env (truncated)</strong></summary>
+            <pre style="white-space:pre-wrap;word-break:break-word;background:#f8f9fa;padding:0.75rem;border-radius:6px;">{raw}</pre>
+          </details>
+        </section>
+        """
+
+    def _generate_scalability_section(self, data: Dict[str, Any]) -> str:
+        """
+        Concurrency sweep charts: ops/s vs concurrency and P95 vs concurrency.
+        Requires the analyzer to produce `data['scalability']`.
+        """
+        scale = data.get("scalability") if isinstance(data, dict) else None
+        if not isinstance(scale, dict) or not scale:
+            return ""
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except Exception:
+            return ""
+
+        blocks = ""
+        for test_name, td in list(scale.items())[:8]:  # cap to keep report compact
+            engines = td.get("engines") if isinstance(td, dict) else None
+            if not isinstance(engines, dict) or not engines:
+                continue
+
+            def _plot_lines(title: str, ylabel: str, key: str, y_mul: float = 1.0) -> str:
+                fig = plt.figure(figsize=(6.5, 2.8), dpi=140)
+                ax = fig.add_subplot(111)
+                for eng, series in engines.items():
+                    if not isinstance(series, dict):
+                        continue
+                    xs = series.get("concurrency") or []
+                    ys = series.get(key) or []
+                    if not xs or not ys or len(xs) != len(ys):
+                        continue
+                    try:
+                        ys2 = [float(v) * y_mul for v in ys]
+                    except Exception:
+                        ys2 = ys
+                    ax.plot(xs, ys2, marker="o", linewidth=1.2, label=str(eng))
+                ax.set_title(title, fontsize=10)
+                ax.set_xlabel("concurrency", fontsize=9)
+                ax.set_ylabel(ylabel, fontsize=9)
+                ax.grid(alpha=0.25)
+                ax.legend(fontsize=8, loc="best")
+                fig.tight_layout()
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png")
+                plt.close(fig)
+                return base64.b64encode(buf.getvalue()).decode("ascii")
+
+            img_ops = _plot_lines(f"{test_name}: Throughput vs Concurrency", "ops/s", "ops_per_sec", 1.0)
+            img_p95 = _plot_lines(f"{test_name}: P95 Latency vs Concurrency", "ms", "p95_duration", 1000.0)
+
+            blocks += f"""
+            <div class="chart-container">
+              <h3>Scalability: {self._escape_html(test_name)}</h3>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                <div><img style="max-width:100%;" src="data:image/png;base64,{img_ops}" /></div>
+                <div><img style="max-width:100%;" src="data:image/png;base64,{img_p95}" /></div>
+              </div>
+            </div>
+            """
+
+        if not blocks:
+            return ""
+
+        return f"""
+        <section class="section">
+          <h2>Scalability (Concurrency Sweep)</h2>
+          <p class="subtitle" style="color:#2c3e50;margin-bottom:1rem;opacity:0.9;">
+            通过 <code>--concurrency-levels</code> 生成的扩展性曲线：吞吐(ops/s)与尾延迟(P95)随并发变化。
+          </p>
+          {blocks}
+        </section>
+        """
+
+    def _generate_run_config_section(self, meta: Dict[str, Any]) -> str:
+        cfg = meta.get("run_config") if isinstance(meta, dict) else None
+        if not isinstance(cfg, dict) or not cfg:
+            return ""
+        rows = ""
+        for k in ["mode", "executor_type", "suite", "test_name", "engines", "iterations", "warmup_iterations", "concurrency", "duration", "default_image", "cri_lifecycle_image", "cri_host_network"]:
+            if k not in cfg:
+                continue
+            v = cfg.get(k)
+            rows += f"<tr><td>{k}</td><td><code>{self._escape_html(json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v))}</code></td></tr>"
+        return f"""
+        <section class="section">
+          <h2>Run Configuration</h2>
+          <table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>{rows}</tbody></table>
+        </section>
+        """
+
+    def _generate_top_findings_section(self, data: Dict[str, Any]) -> str:
+        findings = data.get("top_findings") if isinstance(data, dict) else None
+        if not isinstance(findings, list) or not findings:
+            return ""
+        items = ""
+        for f in findings[:6]:
+            try:
+                test = f.get("test")
+                base = f.get("baseline")
+                other = f.get("other")
+                ratio = float(f.get("performance_ratio", 1.0))
+                if ratio >= 1.0:
+                    desc = f"{base} faster than {other} by {(ratio-1)*100:.0f}%"
+                else:
+                    desc = f"{base} slower than {other} by {(1/ratio-1)*100:.0f}%"
+                items += f"<li><strong>{self._escape_html(test)}</strong>: {self._escape_html(desc)}</li>"
+            except Exception:
+                continue
+        if not items:
+            return ""
+        return f"""
+        <section class="section">
+          <h2>Top Findings</h2>
+          <ul class="insights-list">{items}</ul>
+        </section>
+        """
 
     def _get_css_styles(self) -> str:
         """获取CSS样式"""
@@ -413,9 +587,13 @@ class HTMLReporter(BaseReporter):
                 ("Max Duration", f"{test_data.get('max_duration', 0):.6f}s"),
                 ("Std Deviation", f"{test_data.get('std_duration', 0):.6f}s"),
                 ("Median Duration", f"{test_data.get('median_duration', 0):.6f}s"),
+                ("P25 Duration", f"{test_data.get('p25_duration', 0):.6f}s"),
+                ("P75 Duration", f"{test_data.get('p75_duration', 0):.6f}s"),
+                ("IQR Duration", f"{test_data.get('iqr_duration', 0):.6f}s"),
                 ("95th Percentile", f"{test_data.get('p95_duration', 0):.6f}s"),
                 ("99th Percentile", f"{test_data.get('p99_duration', 0):.6f}s"),
                 ("Operations/Second", f"{test_data.get('operations_per_second', 0):.2f}"),
+                ("CV (Std/Mean)", f"{test_data.get('cv_duration', 0):.3f}"),
             ])
 
         for name, value in metrics:
@@ -427,8 +605,158 @@ class HTMLReporter(BaseReporter):
         if "engines" in test_data:
             engine_table = self._generate_engine_table(test_data["engines"])
             table_html += f"<h3>Engine Breakdown</h3>{engine_table}"
+            table_html += self._generate_test_charts_block(test_data)
+
+            # Show a few failure reasons if available (helps explain non-100% success rates).
+            err_blocks = ""
+            for engine_name, metrics in (test_data.get("engines") or {}).items():
+                samples = metrics.get("error_samples") if isinstance(metrics, dict) else None
+                if not samples:
+                    continue
+                items = "".join([f"<li><code>{self._escape_html(str(s))}</code></li>" for s in samples])
+                err_blocks += f"""
+                <details style="margin: 0.5rem 0;">
+                  <summary><strong>{engine_name}</strong> failure samples</summary>
+                  <ul>{items}</ul>
+                </details>
+                """
+            if err_blocks:
+                table_html += f"<h3>Failure Samples</h3>{err_blocks}"
 
         return table_html
+
+    def _generate_test_charts_block(self, test_data: Dict[str, Any]) -> str:
+        """
+        Generate richer charts (matplotlib) and embed as base64 PNG.
+        Best-effort: if matplotlib isn't available, skip silently.
+        """
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except Exception:
+            return ""
+
+        engines = test_data.get("engines") if isinstance(test_data, dict) else None
+        if not isinstance(engines, dict) or not engines:
+            return ""
+
+        # Collect numbers
+        names = []
+        avg_ms = []
+        succ = []
+        samples_by_engine = []
+        for eng, m in engines.items():
+            names.append(str(eng))
+            try:
+                avg_ms.append(float(m.get("avg_duration", 0.0)) * 1000.0)
+            except Exception:
+                avg_ms.append(0.0)
+            try:
+                succ.append(float(m.get("success_rate", 0.0)) * 100.0)
+            except Exception:
+                succ.append(0.0)
+            s = m.get("duration_samples") if isinstance(m, dict) else None
+            if isinstance(s, list) and s:
+                # seconds -> ms
+                samples_by_engine.append([float(x) * 1000.0 for x in s if isinstance(x, (int, float)) and x >= 0])
+            else:
+                samples_by_engine.append([])
+
+        def _plot_bar(values, title, ylabel):
+            fig = plt.figure(figsize=(6.5, 2.6), dpi=140)
+            ax = fig.add_subplot(111)
+            ax.bar(names, values, color="#3498db")
+            ax.set_title(title, fontsize=10)
+            ax.set_ylabel(ylabel, fontsize=9)
+            ax.grid(axis="y", alpha=0.25)
+            for i, v in enumerate(values):
+                ax.text(i, v, f"{v:.1f}", ha="center", va="bottom", fontsize=8)
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png")
+            plt.close(fig)
+            return base64.b64encode(buf.getvalue()).decode("ascii")
+
+        def _plot_boxplot():
+            # Only plot if we have at least one non-empty sample set
+            if not any(len(s) >= 2 for s in samples_by_engine):
+                return ""
+            fig = plt.figure(figsize=(6.5, 2.8), dpi=140)
+            ax = fig.add_subplot(111)
+            ax.boxplot(
+                [s if s else [0.0] for s in samples_by_engine],
+                labels=names,
+                showfliers=True,
+                patch_artist=True,
+                boxprops=dict(facecolor="#667eea", alpha=0.35),
+                medianprops=dict(color="#2c3e50", linewidth=1.2),
+                whiskerprops=dict(color="#2c3e50", linewidth=1.0),
+                capprops=dict(color="#2c3e50", linewidth=1.0),
+            )
+            ax.set_title("Latency Distribution (Boxplot)", fontsize=10)
+            ax.set_ylabel("ms", fontsize=9)
+            ax.grid(axis="y", alpha=0.25)
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png")
+            plt.close(fig)
+            return base64.b64encode(buf.getvalue()).decode("ascii")
+
+        def _plot_cdf():
+            if not any(len(s) >= 2 for s in samples_by_engine):
+                return ""
+            fig = plt.figure(figsize=(6.5, 2.8), dpi=140)
+            ax = fig.add_subplot(111)
+            for name, s in zip(names, samples_by_engine):
+                if not s:
+                    continue
+                xs = sorted(s)
+                ys = [(i + 1) / len(xs) for i in range(len(xs))]
+                ax.plot(xs, ys, label=name, linewidth=1.2)
+            ax.set_title("Latency CDF (Tail Behavior)", fontsize=10)
+            ax.set_xlabel("ms", fontsize=9)
+            ax.set_ylabel("CDF", fontsize=9)
+            ax.grid(alpha=0.25)
+            ax.legend(fontsize=8, loc="lower right")
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png")
+            plt.close(fig)
+            return base64.b64encode(buf.getvalue()).decode("ascii")
+
+        img1 = _plot_bar(avg_ms, "Avg Duration by Engine", "ms")
+        img2 = _plot_bar(succ, "Success Rate by Engine", "%")
+        img3 = _plot_boxplot()
+        img4 = _plot_cdf()
+
+        grid = f"""
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div><img style="max-width:100%;" src="data:image/png;base64,{img1}" /></div>
+            <div><img style="max-width:100%;" src="data:image/png;base64,{img2}" /></div>
+          </div>
+        """
+        if img3 and img4:
+            grid += f"""
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+            <div><img style="max-width:100%;" src="data:image/png;base64,{img3}" /></div>
+            <div><img style="max-width:100%;" src="data:image/png;base64,{img4}" /></div>
+          </div>
+            """
+        elif img3:
+            grid += f'<div style="margin-top:12px;"><img style="max-width:100%;" src="data:image/png;base64,{img3}" /></div>'
+        elif img4:
+            grid += f'<div style="margin-top:12px;"><img style="max-width:100%;" src="data:image/png;base64,{img4}" /></div>'
+
+        return f"""
+        <div class="chart-container">
+          <h3>Charts</h3>
+          {grid}
+        </div>
+        """
+
+    def _escape_html(self, s: str) -> str:
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _generate_engine_table(self, engines: Dict[str, Any]) -> str:
         """生成引擎表格"""

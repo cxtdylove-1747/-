@@ -41,6 +41,8 @@ class TestContext:
     engine: BaseEngine
     config: TestConfig
     iteration: int
+    # Optional: for concurrent runs, indicate which task produced this iteration.
+    task_id: Optional[int] = None
     warmup: bool = False
 
 
@@ -287,10 +289,14 @@ class BaseExecutor(abc.ABC):
 
         for i in range(self.config.iterations):
             context = TestContext(
-                test_name=f"{test_name}_task_{task_id}",
+                # IMPORTANT:
+                # Executors typically dispatch by exact `test_name` (e.g. "create_container").
+                # If we change the name here, executors like CRIExecutor won't recognize it.
+                test_name=test_name,
                 engine=self.engine,
                 config=self.config,
                 iteration=i,
+                task_id=task_id,
                 warmup=False
             )
             test_metrics = await self.run_single_test(context)
